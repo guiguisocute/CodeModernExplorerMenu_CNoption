@@ -8,12 +8,12 @@ $ScriptRoot = if ( $PSScriptRoot ) { $PSScriptRoot } else { ($(try { $script:psE
 
 $ProductName = 'Code Modern Explorer Menu'
 $ProductPath = "$Env:LOCALAPPDATA\Programs\$ProductName"
-$MenuName = "Open with Code"
+$MenuName = "通过 Code 打开"
 
 if ($ScriptRoot -match 'Insiders') {
     $ProductName = 'Code Insiders Modern Explorer Menu'
     $ProductPath = "$Env:LOCALAPPDATA\Programs\$ProductName"
-    $MenuName = "Open with Code Insiders"
+    $MenuName = "通过 Code Insiders 打开"
 }
 
 if (-not (Test-Path $ProductPath)) {
