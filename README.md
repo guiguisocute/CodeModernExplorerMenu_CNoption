@@ -1,3 +1,13 @@
+改了一点自用，效果如图，可以在win11右键一级菜单里使用VScode
+<img src="https://guiguisocute-1318017707.cos.ap-guangzhou.myqcloud.com/20251003230218172.png"/>
+
+
+#### 吐槽
+不知道微软哪次更新把win11的win10右键中“在终端打开”给删了，现在只有win11菜单能用，调了半天都没法回来，不想回到地址栏输powershell的苦日子了，只能选择这种曲线救国方式，所幸还蛮好看的，但我估计还得适应一阵子
+
+
+***
+> 以下为源仓库README原文
 # Code Modern Explorer Menu
 An MSI package that adds the Windows 11 Modern Explorer menu for Microsoft Visual Studio Code.
   
