@@ -7,8 +7,7 @@
           'src/explorer_command.def',
         ],
         'include_dirs': [
-          'vcpkg_installed/<(target_arch)-windows/include/fmt',
-          'vcpkg_installed/<(target_arch)-windows/include/wil',
+          'vcpkg_installed/<(target_arch)-windows/include',
         ],
         'defines': [
           '_WINDLL',
@@ -19,8 +18,6 @@
           '_CRT_NONSTDC_NO_DEPRECATE',
         ],
         'msvs_settings': {
-          'WindowsTargetPlatformVersion': '10',
-          'LanguageStandard': 'stdcpp20',
           'VCLinkerTool': {
             'AdditionalOptions': [
               '/guard:cf',
