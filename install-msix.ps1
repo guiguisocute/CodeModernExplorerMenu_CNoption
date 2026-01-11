@@ -339,6 +339,35 @@ function Import-CertificateToStore {
     }
 }
 
+function Read-YesNo {
+    param(
+        [Parameter(Mandatory = $true)][string]$Prompt,
+        [bool]$DefaultYes = $false
+    )
+
+    $suffix = if ($DefaultYes) { ' [Y/n]' } else { ' [y/N]' }
+    for ($i = 0; $i -lt 3; $i++) {
+        try {
+            $raw = Read-Host ($Prompt + $suffix)
+        } catch {
+            return $false
+        }
+
+        if ($null -eq $raw) { $raw = '' }
+        $raw = $raw.Trim()
+
+        if ($raw.Length -eq 0) {
+            return $DefaultYes
+        }
+
+        if ($raw -match '^(?i:y|yes)$') { return $true }
+        if ($raw -match '^(?i:n|no)$') { return $false }
+
+        Write-Info '请输入 Y 或 N。'
+    }
+    return $DefaultYes
+}
+
 function Resolve-SingleFileInScriptDir {
     param(
         [Parameter(Mandatory = $true)][string]$Pattern,
@@ -478,7 +507,6 @@ try {
     throw
 }
 Write-Info '完成。'
-Write-Info '提示：若右键菜单标题/图标未更新，请重启资源管理器（或注销/重新登录）。'
 
 $installed = Get-AppxPackage -Name $script:ExpectedIdentityName -ErrorAction SilentlyContinue
 if ($installed) {
@@ -486,4 +514,11 @@ if ($installed) {
 } else {
     Write-Info "安装已结束，但当前用户看不到该包：$($script:ExpectedIdentityName)"
     Write-Info '如果过程中弹出了 UAC，请确认安装步骤没有只在提升权限的管理员会话中执行。'
+}
+
+if (Read-YesNo -Prompt '是否现在重启 Windows 资源管理器以应用上下文菜单更改？（将关闭已打开的资源管理器窗口）' -DefaultYes $false) {
+    Restart-WindowsExplorer
+    Write-Info '已重启资源管理器。'
+} else {
+    Write-Info '已跳过重启资源管理器。若右键菜单未更新，可稍后手动重启资源管理器或注销/重新登录。'
 }
