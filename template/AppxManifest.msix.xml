@@ -67,7 +67,7 @@
         Description="@@PackageDescription@@"
         BackgroundColor="transparent"
         Square150x150Logo="resources\app\resources\win32\code_150x150.png"
-        Square44x44Logo="resources\app\resources\win32\code_70x70.png">
+        Square44x44Logo="resources\app\resources\win32\code_44x44.png">
       </uap:VisualElements>
       <Extensions>
         <desktop4:Extension Category="windows.fileExplorerContextMenus">

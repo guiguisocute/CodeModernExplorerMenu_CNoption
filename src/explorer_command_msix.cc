@@ -7,9 +7,11 @@
 #include <shellapi.h>
 #include <shlobj.h>
 #include <filesystem>
+#include <algorithm>
 #include <string>
 #include <utility>
 #include <optional>
+#include <vector>
 #include <shlwapi.h>
 #include <shobjidl_core.h>
 #include <userenv.h>
@@ -31,6 +33,7 @@ using Microsoft::WRL::Module;
 using Microsoft::WRL::ModuleType;
 using Microsoft::WRL::RuntimeClass;
 using Microsoft::WRL::RuntimeClassFlags;
+using Microsoft::WRL::Make;
 
 extern "C" BOOL WINAPI DllMain(HINSTANCE instance,
                                DWORD reason,
@@ -47,6 +50,13 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE instance,
 }
 
 namespace {
+  enum class VSCodeVariant {
+    Stable,
+    Insiders,
+  };
+
+  std::wstring QuoteForCommandLineArg(const std::wstring& arg);
+
   // 参考实现来自 Chromium：
   // https://source.chromium.org/chromium/chromium/src/+/main:base/command_line.cc;l=109-159
 
@@ -161,6 +171,95 @@ namespace {
     return FindVSCodeExeForVariant(true);
   }
 
+  std::optional<std::filesystem::path> FindVSCodeExeForVariant(VSCodeVariant variant) {
+    return FindVSCodeExeForVariant(variant == VSCodeVariant::Insiders);
+  }
+
+  const wchar_t* GetVariantTitle(VSCodeVariant variant) {
+    if (variant == VSCodeVariant::Insiders) {
+      return L"通过 Code Insiders 打开";
+    }
+    return L"通过 Code（正式版）打开";
+  }
+
+  bool IsVariantAvailable(VSCodeVariant variant) {
+    return FindVSCodeExeForVariant(variant).has_value();
+  }
+
+  bool AnyVariantAvailable() {
+    return IsVariantAvailable(VSCodeVariant::Stable) || IsVariantAvailable(VSCodeVariant::Insiders);
+  }
+
+  HRESULT DuplicateVariantIcon(VSCodeVariant variant, PWSTR* icon) {
+    if (icon == nullptr) {
+      return E_POINTER;
+    }
+    *icon = nullptr;
+
+    if (auto exe = FindVSCodeExeForVariant(variant)) {
+      std::wstring exe_icon = exe->wstring();
+      exe_icon.append(L",0");
+      return SHStrDupW(exe_icon.c_str(), icon);
+    }
+
+    return E_FAIL;
+  }
+
+  HRESULT BuildSelectionArgs(IShellItemArray* items, std::wstring* args) {
+    if (args == nullptr) {
+      return E_POINTER;
+    }
+
+    args->clear();
+    if (!items) {
+      return S_OK;
+    }
+
+    DWORD count = 0;
+    RETURN_IF_FAILED(items->GetCount(&count));
+    for (DWORD i = 0; i < count; ++i) {
+      ComPtr<IShellItem> item;
+      auto result = items->GetItemAt(i, &item);
+      if (FAILED(result) || !item) {
+        continue;
+      }
+
+      wil::unique_cotaskmem_string path;
+      result = item->GetDisplayName(SIGDN_FILESYSPATH, &path);
+      if (FAILED(result) || !path) {
+        continue;
+      }
+
+      if (!args->empty()) {
+        args->push_back(L' ');
+      }
+      args->append(QuoteForCommandLineArg(path.get()));
+    }
+
+    return S_OK;
+  }
+
+  HRESULT LaunchVariant(VSCodeVariant variant, IShellItemArray* items) {
+    auto exe = FindVSCodeExeForVariant(variant);
+    if (!exe) {
+      return HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
+    }
+
+    std::wstring args;
+    RETURN_IF_FAILED(BuildSelectionArgs(items, &args));
+    if (args.empty()) {
+      return S_OK;
+    }
+
+    std::wstring command_line = L"--new-window ";
+    command_line.append(args);
+    HINSTANCE ret = ShellExecuteW(nullptr, L"open", exe->c_str(), command_line.c_str(), nullptr, SW_SHOW);
+    if ((INT_PTR)ret <= HINSTANCE_ERROR) {
+      return E_FAIL;
+    }
+    return S_OK;
+  }
+
   std::wstring QuoteForCommandLineArg(const std::wstring& arg) {
   // 按 CommandLineToArgvW 的参数解析规则进行转义/加引号。
   // http://msdn.microsoft.com/en-us/library/17w5ykft.aspx
@@ -204,16 +303,128 @@ namespace {
 
 }
 
+class ExplorerSubCommand final : public RuntimeClass<RuntimeClassFlags<ClassicCom | InhibitRoOriginateError>, IExplorerCommand> {
+ public:
+  explicit ExplorerSubCommand(VSCodeVariant variant) : variant_(variant) {}
+
+  IFACEMETHODIMP GetTitle(IShellItemArray* items, PWSTR* name) override {
+    return SHStrDupW(GetVariantTitle(variant_), name);
+  }
+
+  IFACEMETHODIMP GetIcon(IShellItemArray* items, PWSTR* icon) override {
+    return DuplicateVariantIcon(variant_, icon);
+  }
+
+  IFACEMETHODIMP GetToolTip(IShellItemArray* items, PWSTR* infoTip) override {
+    if (infoTip == nullptr) {
+      return E_POINTER;
+    }
+    *infoTip = nullptr;
+    return E_NOTIMPL;
+  }
+
+  IFACEMETHODIMP GetCanonicalName(GUID* guidCommandName) override {
+    if (guidCommandName == nullptr) {
+      return E_POINTER;
+    }
+    *guidCommandName = GUID_NULL;
+    return S_OK;
+  }
+
+  IFACEMETHODIMP GetState(IShellItemArray* items, BOOL okToBeSlow, EXPCMDSTATE* cmdState) override {
+    if (cmdState == nullptr) {
+      return E_POINTER;
+    }
+    *cmdState = IsVariantAvailable(variant_) ? ECS_ENABLED : ECS_HIDDEN;
+    return S_OK;
+  }
+
+  IFACEMETHODIMP GetFlags(EXPCMDFLAGS* flags) override {
+    if (flags == nullptr) {
+      return E_POINTER;
+    }
+    *flags = ECF_DEFAULT;
+    return S_OK;
+  }
+
+  IFACEMETHODIMP EnumSubCommands(IEnumExplorerCommand** enumCommands) override {
+    if (enumCommands == nullptr) {
+      return E_POINTER;
+    }
+    *enumCommands = nullptr;
+    return E_NOTIMPL;
+  }
+
+  IFACEMETHODIMP Invoke(IShellItemArray* items, IBindCtx* bindCtx) override {
+    return LaunchVariant(variant_, items);
+  }
+
+ private:
+  VSCodeVariant variant_;
+};
+
+class ExplorerCommandEnumerator final : public RuntimeClass<RuntimeClassFlags<ClassicCom>, IEnumExplorerCommand> {
+ public:
+  ExplorerCommandEnumerator() = default;
+
+  explicit ExplorerCommandEnumerator(const std::vector<ComPtr<IExplorerCommand>>& commands)
+      : commands_(commands), index_(0) {}
+
+  IFACEMETHODIMP Next(ULONG count, IExplorerCommand** commands, ULONG* fetched) override {
+    if (commands == nullptr) {
+      return E_POINTER;
+    }
+
+    ULONG actual = 0;
+    while (actual < count && index_ < commands_.size()) {
+      commands[actual] = commands_[index_].Get();
+      commands[actual]->AddRef();
+      ++actual;
+      ++index_;
+    }
+
+    if (fetched != nullptr) {
+      *fetched = actual;
+    }
+
+    return actual == count ? S_OK : S_FALSE;
+  }
+
+  IFACEMETHODIMP Skip(ULONG count) override {
+    index_ = (std::min)(commands_.size(), index_ + static_cast<size_t>(count));
+    return index_ < commands_.size() ? S_OK : S_FALSE;
+  }
+
+  IFACEMETHODIMP Reset() override {
+    index_ = 0;
+    return S_OK;
+  }
+
+  IFACEMETHODIMP Clone(IEnumExplorerCommand** enumCommands) override {
+    if (enumCommands == nullptr) {
+      return E_POINTER;
+    }
+
+    auto clone = Make<ExplorerCommandEnumerator>(commands_);
+    if (!clone) {
+      *enumCommands = nullptr;
+      return E_OUTOFMEMORY;
+    }
+    clone->index_ = index_;
+    *enumCommands = clone.Detach();
+    return S_OK;
+  }
+
+ private:
+  std::vector<ComPtr<IExplorerCommand>> commands_;
+  size_t index_ = 0;
+};
+
 class __declspec(uuid(DLL_UUID)) ExplorerCommandHandler final : public RuntimeClass<RuntimeClassFlags<ClassicCom | InhibitRoOriginateError>, IExplorerCommand> {
  public:
   // IExplorerCommand 接口实现：
   IFACEMETHODIMP GetTitle(IShellItemArray* items, PWSTR* name) {
-    // 优先使用内置标题：这样 MSIX 安装不需要额外写注册表。
-    #if defined(INSIDER)
-         const wchar_t kDefaultTitle[] = L"\u901a\u8fc7 Code Insiders \u6253\u5f00";
-    #else
-         const wchar_t kDefaultTitle[] = L"\u901a\u8fc7 Code \u6253\u5f00";
-    #endif
+    const wchar_t kDefaultTitle[] = L"通过 VS Code 打开";
 
     // 当在打包环境（MSIX）运行时，不读取旧版安装（MSI）写入的注册表状态。
     if (IsRunningPackaged()) {
@@ -292,67 +503,43 @@ class __declspec(uuid(DLL_UUID)) ExplorerCommandHandler final : public RuntimeCl
   }
 
   IFACEMETHODIMP GetState(IShellItemArray* items, BOOL okToBeSlow, EXPCMDSTATE* cmdState) {
-    *cmdState = ECS_ENABLED;
+    *cmdState = AnyVariantAvailable() ? ECS_ENABLED : ECS_HIDDEN;
     return S_OK;
   }
 
   IFACEMETHODIMP GetFlags(EXPCMDFLAGS* flags) {
-    *flags = ECF_DEFAULT;
+    *flags = ECF_HASSUBCOMMANDS;
     return S_OK;
   }
 
   IFACEMETHODIMP EnumSubCommands(IEnumExplorerCommand** enumCommands) {
+    if (enumCommands == nullptr) {
+      return E_POINTER;
+    }
     *enumCommands = nullptr;
-    return E_NOTIMPL;
+
+    std::vector<ComPtr<IExplorerCommand>> commands;
+    if (IsVariantAvailable(VSCodeVariant::Stable)) {
+      commands.push_back(Make<ExplorerSubCommand>(VSCodeVariant::Stable));
+    }
+    if (IsVariantAvailable(VSCodeVariant::Insiders)) {
+      commands.push_back(Make<ExplorerSubCommand>(VSCodeVariant::Insiders));
+    }
+
+    if (commands.empty()) {
+      return S_FALSE;
+    }
+
+    auto enumerator = Make<ExplorerCommandEnumerator>(commands);
+    if (!enumerator) {
+      return E_OUTOFMEMORY;
+    }
+
+    *enumCommands = enumerator.Detach();
+    return S_OK;
   }
 
   IFACEMETHODIMP Invoke(IShellItemArray* items, IBindCtx* bindCtx) {
-    if (!items) {
-      return S_OK;
-    }
-
-    std::filesystem::path module_path{ wil::GetModuleFileNameW<std::wstring>(wil::GetModuleInstanceHandle()) };
-    const std::filesystem::path package_root = module_path.remove_filename();
-    const std::filesystem::path host_exe = package_root / L"CEMHost.exe";
-    if (!std::filesystem::exists(host_exe)) {
-      return E_FAIL;
-    }
-
-    DWORD count = 0;
-    RETURN_IF_FAILED(items->GetCount(&count));
-    if (count == 0) {
-      return S_OK;
-    }
-
-    std::wstring args;
-    for (DWORD i = 0; i < count; ++i) {
-      ComPtr<IShellItem> item;
-      auto result = items->GetItemAt(i, &item);
-      if (FAILED(result) || !item) {
-        continue;
-      }
-
-      wil::unique_cotaskmem_string path;
-      result = item->GetDisplayName(SIGDN_FILESYSPATH, &path);
-      if (FAILED(result) || !path) {
-        continue;
-      }
-
-      if (!args.empty()) {
-        args.push_back(L' ');
-      }
-      args.append(QuoteForCommandLineArg(path.get()));
-    }
-
-    if (args.empty()) {
-      return S_OK;
-    }
-
-    HINSTANCE ret = ShellExecuteW(nullptr, L"open", host_exe.c_str(), args.c_str(), nullptr, SW_SHOW);
-    if ((INT_PTR)ret <= HINSTANCE_ERROR) {
-      return E_FAIL;
-    }
-
     return S_OK;
   }
 };

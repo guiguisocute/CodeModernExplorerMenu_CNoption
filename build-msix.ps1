@@ -593,6 +593,7 @@ function New-AppIconAssets {
     )
 
     $png150 = Join-Path $AssetsDir 'code_150x150.png'
+    $png44 = Join-Path $AssetsDir 'code_44x44.png'
     $png70 = Join-Path $AssetsDir 'code_70x70.png'
     $ico = Join-Path $AssetsDir 'code.ico'
 
@@ -675,6 +676,7 @@ function New-AppIconAssets {
                 }
 
                 Save-ResizedPng -Size 150 -Path $png150
+                Save-ResizedPng -Size 44 -Path $png44
                 Save-ResizedPng -Size 70 -Path $png70
             } finally {
                 $bmp.Dispose()
@@ -724,6 +726,7 @@ function New-AppIconAssets {
                     }
 
                     Save-ResizedPng -Size 150 -Path $png150
+                    Save-ResizedPng -Size 44 -Path $png44
                     Save-ResizedPng -Size 70 -Path $png70
                 } finally {
                     $bmp.Dispose()
@@ -766,6 +769,7 @@ function New-AppIconAssets {
     if (-not $ok) {
         # 兜底：生成确定性的占位图标。
         New-SolidPng -Path $png150 -Size 150
+        New-SolidPng -Path $png44 -Size 44
         New-SolidPng -Path $png70 -Size 70
         New-SolidIco -Path $ico -Size 64
     }
