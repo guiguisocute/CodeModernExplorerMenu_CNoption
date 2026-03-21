@@ -380,6 +380,7 @@ function ConvertTo-SecureStringIfNeeded {
 
     $s = [string]$Value
     if ($s -eq $null) { return $null }
+    if ($s.Length -eq 0) { return New-Object SecureString }
     return ConvertTo-SecureString -String $s -AsPlainText -Force
 }
 
