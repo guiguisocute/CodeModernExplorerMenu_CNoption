@@ -2,6 +2,9 @@ out*/*
 [D]efault/*
 **/vcpkg_installed/*
 
+# 仓库内自动 bootstrap 的 vcpkg（用于 fresh clone 一键构建）。
+_deps/vcpkg/*
+
 # VS Code files for those working on multiple tools
 .vscode/*
 *.code-workspace

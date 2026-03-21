@@ -1,11 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
-#include <fmt/core.h>
-#include <iostream>
-#include <fstream>
 #include <windows.h>
 #include <shellapi.h>
-#include <shlobj.h>
+
 #include <filesystem>
 #include <string>
 #include <utility>
@@ -45,10 +42,9 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE instance,
 }
 
 namespace {
-  // Extracted from
-  // https://source.chromium.org/chromium/chromium/src/+/main:base/command_line.cc;l=109-159
-
-  std::wstring QuoteForCommandLineArg(const std::wstring& arg) {
+// Extracted from
+// https://source.chromium.org/chromium/chromium/src/+/main:base/command_line.cc;l=109-159
+std::wstring QuoteForCommandLineArg(const std::wstring& arg) {
   // We follow the quoting rules of CommandLineToArgvW.
   // http://msdn.microsoft.com/en-us/library/17w5ykft.aspx
   std::wstring quotable_chars(L" \\\"");
@@ -90,64 +86,117 @@ namespace {
   return out;
 }
 
+const wchar_t* GetContextMenuRegKey() {
+#if defined(INSIDER)
+  return L"Software\\Classes\\CodeInsidersModernExplorerMenu";
+#else
+  return L"Software\\Classes\\CodeModernExplorerMenu";
+#endif
+}
+
+static int IsContextMenuEnabled() {
+  static int enabled = -1;
+  HKEY subhkey;
+  int err;
+
+  if (enabled != -1)
+    return enabled;
+
+  // Check if the context menu is enabled in the registry.
+  err = RegOpenKeyExW(HKEY_LOCAL_MACHINE,
+                      GetContextMenuRegKey(),
+                      0,
+                      KEY_QUERY_VALUE | KEY_WOW64_64KEY,
+                      &subhkey);
+  if (err != ERROR_SUCCESS) {
+    err = RegOpenKeyExW(HKEY_CURRENT_USER,
+                        GetContextMenuRegKey(),
+                        0,
+                        KEY_QUERY_VALUE | KEY_WOW64_64KEY,
+                        &subhkey);
+  }
+
+  if (err != ERROR_SUCCESS) {
+    enabled = 0;
+  } else {
+    enabled = 1;
+    RegCloseKey(subhkey);
+  }
+
+  return enabled;
+}
+
+std::filesystem::path ResolveCodeExePath() {
+  std::filesystem::path module_path{ wil::GetModuleFileNameW<std::wstring>(wil::GetModuleInstanceHandle()) };
+
+  const auto packaged_candidate = module_path.remove_filename().parent_path().parent_path().parent_path() / EXE_NAME;
+  if (std::filesystem::exists(packaged_candidate)) {
+    return packaged_candidate;
+  }
+
+  module_path = wil::GetModuleFileNameW<std::wstring>(wil::GetModuleInstanceHandle());
+  const auto legacy_candidate = module_path.remove_filename().parent_path().parent_path() / DIR_NAME / EXE_NAME;
+  if (std::filesystem::exists(legacy_candidate)) {
+    return legacy_candidate;
+  }
+
+  const auto program_files_candidate = std::filesystem::path(L"C:\\Program Files") / DIR_NAME / EXE_NAME;
+  if (std::filesystem::exists(program_files_candidate)) {
+    return program_files_candidate;
+  }
+
+  return {};
+}
+
 }
 
 class __declspec(uuid(DLL_UUID)) ExplorerCommandHandler final : public RuntimeClass<RuntimeClassFlags<ClassicCom | InhibitRoOriginateError>, IExplorerCommand> {
  public:
   // IExplorerCommand implementation:
   IFACEMETHODIMP GetTitle(IShellItemArray* items, PWSTR* name) {
-    const size_t kMaxStringLength = 1024;
-    wchar_t value_w[kMaxStringLength];
-    wchar_t expanded_value_w[kMaxStringLength];
-    DWORD value_size_w = sizeof(value_w);
-    #if defined(INSIDER)
-        const wchar_t kTitleRegkey[] = L"Software\\Classes\\CodeInsidersModernExplorerMenu";
-    #else
-        const wchar_t kTitleRegkey[] = L"Software\\Classes\\CodeModernExplorerMenu";
-    #endif
-    HKEY subhkey = nullptr;
-    LONG result = RegOpenKeyEx(HKEY_LOCAL_MACHINE, kTitleRegkey, 0, KEY_READ, &subhkey);
-    if (result != ERROR_SUCCESS) {
-      result = RegOpenKeyEx(HKEY_CURRENT_USER, kTitleRegkey, 0, KEY_READ, &subhkey);
-    }
+    static std::wstring cached_title;
+    static bool title_cached = false;
+    
+    if (!title_cached) {
+      const size_t kMaxStringLength = 1024;
+      wchar_t value_w[kMaxStringLength] = {0};
+      wchar_t expanded_value_w[kMaxStringLength] = {0};
+      DWORD value_size_w = sizeof(value_w);
+      HKEY subhkey = nullptr;
+      LONG result = RegOpenKeyEx(HKEY_LOCAL_MACHINE, GetContextMenuRegKey(), 0, KEY_READ, &subhkey);
+      if (result != ERROR_SUCCESS) {
+        result = RegOpenKeyEx(HKEY_CURRENT_USER, GetContextMenuRegKey(), 0, KEY_READ, &subhkey);
+      }
 
-    DWORD type = REG_EXPAND_SZ;
-    RegQueryValueEx(subhkey, L"Title", nullptr, &type,
-                    reinterpret_cast<LPBYTE>(&value_w), &value_size_w);
-    RegCloseKey(subhkey);
-    value_size_w = ExpandEnvironmentStrings(value_w, expanded_value_w, kMaxStringLength);
-    return (value_size_w && value_size_w < kMaxStringLength)
-        ? SHStrDup(expanded_value_w, name)
-        : SHStrDup(L"UnExpected Title", name);
+      if (result == ERROR_SUCCESS && subhkey != nullptr) {
+        DWORD type = REG_EXPAND_SZ;
+        if (RegQueryValueEx(subhkey, L"Title", nullptr, &type,
+                            reinterpret_cast<LPBYTE>(&value_w), &value_size_w) == ERROR_SUCCESS) {
+          value_size_w = ExpandEnvironmentStrings(value_w, expanded_value_w, kMaxStringLength);
+        } else {
+          value_size_w = 0;
+        }
+        RegCloseKey(subhkey);
+      } else {
+        value_size_w = 0;
+      }
+      
+      if (value_size_w && value_size_w < kMaxStringLength) {
+        cached_title = expanded_value_w;
+      } else {
+        cached_title = L"UnExpected Title";
+      }
+      title_cached = true;
+    }
+    
+    return SHStrDup(cached_title.c_str(), name);
   }
 
   IFACEMETHODIMP GetIcon(IShellItemArray* items, PWSTR* icon) {
-    std::filesystem::path module_path{ wil::GetModuleFileNameW<std::wstring>(wil::GetModuleInstanceHandle()) };
-    module_path = module_path.remove_filename().parent_path().parent_path();
-    module_path = module_path / DIR_NAME / EXE_NAME;
-
-    if (!std::filesystem::exists(module_path)) {
-        std::filesystem::path fallback_path = std::filesystem::path("C:\\Program Files") / DIR_NAME / EXE_NAME;
-        if (std::filesystem::exists(fallback_path)) {
-            module_path = fallback_path;
-        } else {
-            return E_FAIL;
-        }
+    const auto module_path = ResolveCodeExePath();
+    if (module_path.empty()) {
+      return E_FAIL;
     }
-    
-    // doesn't work, had to use hardcoded "Program Files" path
-    // if (!std::filesystem::exists(module_path)) {
-    //   PWSTR ProgramFilesPath = nullptr;
-    //   HRESULT hr = SHGetKnownFolderPath(FOLDERID_ProgramFiles, 0, NULL, &ProgramFilesPath);
-    //   std::filesystem::path fallback_path = std::filesystem::path(ProgramFilesPath) / DIR_NAME / EXE_NAME;
-    //   CoTaskMemFree(ProgramFilesPath);
-    //   if (std::filesystem::exists(fallback_path)) {
-    //     module_path = fallback_path;
-    //   } else {
-    //     return E_FAIL;
-    //   }
-    // }
-
     return SHStrDupW(module_path.c_str(), icon);
   }
 
@@ -162,7 +211,7 @@ class __declspec(uuid(DLL_UUID)) ExplorerCommandHandler final : public RuntimeCl
   }
 
   IFACEMETHODIMP GetState(IShellItemArray* items, BOOL okToBeSlow, EXPCMDSTATE* cmdState) {
-    *cmdState = ECS_ENABLED;
+    *cmdState = IsContextMenuEnabled() ? ECS_ENABLED : ECS_HIDDEN;
     return S_OK;
   }
 
@@ -177,51 +226,29 @@ class __declspec(uuid(DLL_UUID)) ExplorerCommandHandler final : public RuntimeCl
   }
 
   IFACEMETHODIMP Invoke(IShellItemArray* items, IBindCtx* bindCtx) {
-      if (items) {
-          std::filesystem::path module_path{ wil::GetModuleFileNameW<std::wstring>(wil::GetModuleInstanceHandle()) };
-          module_path = module_path.remove_filename().parent_path().parent_path();
-          module_path = module_path / DIR_NAME / EXE_NAME;
-
-          if (!std::filesystem::exists(module_path)) {
-            std::filesystem::path fallback_path = std::filesystem::path("C:\\Program Files") / DIR_NAME / EXE_NAME;
-            if (std::filesystem::exists(fallback_path)) {
-                module_path = fallback_path;
-            } else {
-                return E_FAIL;
+    if (items) {
+      const auto module_path = ResolveCodeExePath();
+      if (module_path.empty()) {
+      return E_FAIL;
+      }
+      DWORD count;
+      RETURN_IF_FAILED(items->GetCount(&count));
+      for (DWORD i = 0; i < count; ++i) {
+        ComPtr<IShellItem> item;
+        auto result = items->GetItemAt(i, &item);
+        if (SUCCEEDED(result)) {
+          wil::unique_cotaskmem_string path;
+          result = item->GetDisplayName(SIGDN_FILESYSPATH, &path);
+          if (SUCCEEDED(result)) {
+            HINSTANCE ret = ShellExecuteW(nullptr, L"open", module_path.c_str(), QuoteForCommandLineArg(path.get()).c_str(), nullptr, SW_SHOW);
+            if ((INT_PTR)ret <= HINSTANCE_ERROR) {
+              RETURN_LAST_ERROR();
             }
           }
-
-          // doesn't work, had to use hardcoded "Program Files" path
-          // if (!std::filesystem::exists(module_path)) {
-          //   PWSTR ProgramFilesPath = nullptr;
-          //   HRESULT hr = SHGetKnownFolderPath(FOLDERID_ProgramFiles, 0, NULL, &ProgramFilesPath);
-          //   std::filesystem::path fallback_path = std::filesystem::path(ProgramFilesPath) / DIR_NAME / EXE_NAME;
-          //   CoTaskMemFree(ProgramFilesPath);
-          //   if (std::filesystem::exists(fallback_path)) {
-          //     module_path = fallback_path;
-          //   } else {
-          //     return E_FAIL;
-          //   }
-          // }
-
-          DWORD count;
-          RETURN_IF_FAILED(items->GetCount(&count));
-          for (DWORD i = 0; i < count; ++i) {
-              ComPtr<IShellItem> item;
-              auto result = items->GetItemAt(i, &item);
-              if (SUCCEEDED(result)) {
-                  wil::unique_cotaskmem_string path;
-                  result = item->GetDisplayName(SIGDN_FILESYSPATH, &path);
-                  if (SUCCEEDED(result)) {
-                      HINSTANCE ret = ShellExecuteW(nullptr, L"open", module_path.c_str(), QuoteForCommandLineArg(path.get()).c_str(), nullptr, SW_SHOW);
-                      if ((INT_PTR)ret <= HINSTANCE_ERROR) {
-                          RETURN_LAST_ERROR();
-                      }
-                  }
-              }
-          }
+        }
       }
-      return S_OK;
+    }
+    return S_OK;
   }
 };
 
